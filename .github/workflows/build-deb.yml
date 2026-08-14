@@ -8,10 +8,17 @@ on:
   workflow_dispatch: # Allows manual trigger
 
 jobs:
-  build-arm64:
-    name: Build arm64 Deb
+  build-pi:
+    name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armhf
+            platform: linux/arm/v7
+            
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -19,17 +26,17 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Compile and Package inside ARM64 Ubuntu Container
+      - name: Compile and Package inside Container
         run: |
-          docker run --rm --platform linux/arm64 \
+          docker run --rm --platform ${{ matrix.platform }} \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             ubuntu:22.04 \
-            /bin/bash -c "apt-get update && apt-get install -y dpkg-dev cython3 gcc python3-dev && chmod +x build-deb.sh && ./build-deb.sh arm64"
+            /bin/bash -c "apt-get update && apt-get install -y dpkg-dev cython3 gcc python3-dev && chmod +x build-deb.sh && ./build-deb.sh ${{ matrix.arch }}"
 
       - name: Upload Debian Package Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wifibox-agent_arm64.deb
+          name: wifibox-agent_${{ matrix.arch }}.deb
           path: "*.deb"
           retention-days: 7

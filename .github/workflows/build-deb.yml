@@ -20,18 +20,12 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Compile and Package inside ARM64 Ubuntu Container
-        uses: addnab/docker-run-action@v3
-        with:
-          image: arm64v8/ubuntu:22.04
-          options: -v ${{ github.workspace }}:/workspace -w /workspace
-          run: |
-            # Update apt and install dependencies inside the ARM container
-            apt-get update
-            apt-get install -y dpkg-dev cython3 gcc python3-dev
-            
-            # Make the build script executable and run it, passing arm64
-            chmod +x build-deb.sh
-            ./build-deb.sh arm64
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ubuntu:22.04 \
+            /bin/bash -c "apt-get update && apt-get install -y dpkg-dev cython3 gcc python3-dev && chmod +x build-deb.sh && ./build-deb.sh arm64"
 
       - name: Upload Debian Package Artifact
         uses: actions/upload-artifact@v4

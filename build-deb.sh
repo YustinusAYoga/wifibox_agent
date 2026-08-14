@@ -1,145 +1,118 @@
 #!/bin/bash
-
 set -e
 
-# Check for required build tools
-if ! command -v gcc &> /dev/null || ! command -v python3-config &> /dev/null; then
-  echo "[-] Missing build tools. Please install gcc and python3-dev."
-  exit 1
+# Take architecture from arguments, default to host architecture (will be armhf in the Docker container)
+ARCH=${1:-$(dpkg --print-architecture)}
+PKG_NAME="wifibox-agent"
+VERSION="1.0.0"
+PKG_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
+BUILD_SRC="build_src"
+
+echo "=========================================="
+echo " Building Cythonized Debian Package"
+echo " Target Architecture: $ARCH"
+echo " Package Name: $PKG_DIR.deb"
+echo "=========================================="
+
+if [ ! -f "wifibox_agent.py" ]; then
+    echo "Error: wifibox_agent.py not found in the current directory."
+    exit 1
 fi
 
-CYTHON_BIN=$(command -v cython3 || command -v cython)
-if [ -z "$CYTHON_BIN" ]; then
-  echo "[-] Cython not found. Please install cython3."
-  exit 1
-fi
+# 1. Create Directory Structure
+mkdir -p "$PKG_DIR/DEBIAN"
+mkdir -p "$PKG_DIR/home/oldendome/wifibox-agent"
+mkdir -p "$PKG_DIR/lib/systemd/system"
+mkdir -p "$BUILD_SRC"
 
-if [ ! -f "wifibox_agent_collector.py" ]; then
-  echo "[-] Error: wifibox_agent_collector.py not found in the current directory!"
-  exit 1
-fi
-
-PKG_NAME="wifibox-collector"
-PKG_VERSION="1.0.6"
-BUILD_DIR="./wifibox-collector-build"
-INSTALL_DIR="home/oldendome/wifibox-agent-collector"
-SERVICE_USER="oldendome"
-
-# FORCE THE ARCHITECTURE TO armhf
-ARCH="armhf"
-
-echo "[+] Cleaning previous build files..."
-rm -rf "$BUILD_DIR"
-rm -f "${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
-
-echo "[+] Creating Debian package directory structure..."
-mkdir -p "$BUILD_DIR/DEBIAN"
-mkdir -p "$BUILD_DIR/$INSTALL_DIR/data"
-mkdir -p "$BUILD_DIR/$INSTALL_DIR/pushed_backlogs"
-mkdir -p "$BUILD_DIR/lib/systemd/system"
-
-echo "[+] Writing control file..."
-cat << EOF > "$BUILD_DIR/DEBIAN/control"
-Package: ${PKG_NAME}
-Version: ${PKG_VERSION}
+# 2. Create the Control File
+cat << EOF > "$PKG_DIR/DEBIAN/control"
+Package: $PKG_NAME
+Version: $VERSION
 Section: utils
 Priority: optional
-Architecture: ${ARCH}
-Depends: python3, python3-requests, python3-pip
-Maintainer: oldendome <admin@local>
-Description: Wifibox Fleet Collector and Push Receiver Service (Cythonized)
- Scrapes fleet metrics, manages push backlogs, and exposes endpoints for Prometheus and Grafana.
+Architecture: $ARCH
+Depends: python3, python3-pip, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq
+Maintainer: Your Name <your.email@example.com>
+Description: Wifibox Agent Prometheus Exporter (Cythonized)
+ A background binary service to monitor Raspberry Pi network, VPN, and DHCP health.
 EOF
 
-echo "[+] Writing post-installation script..."
-cat << EOF > "$BUILD_DIR/DEBIAN/postinst"
+# 3. Create Post-Install Script
+cat << 'EOF' > "$PKG_DIR/DEBIAN/postinst"
 #!/bin/bash
 set -e
-SERVICE_USER="${SERVICE_USER}"
-INSTALL_DIR="/${INSTALL_DIR}"
+echo "Installing Python dependencies (prometheus_client, requests)..."
+pip3 install prometheus_client requests --break-system-packages || pip3 install prometheus_client requests
 
-echo "[+] Ensuring python3-prometheus-client is installed..."
-if ! python3 -c "import prometheus_client" &>/dev/null; then
-    pip3 install prometheus-client --break-system-packages || pip3 install prometheus-client
+if ! id "dev" &>/dev/null; then
+    useradd -r -s /bin/false dev
 fi
 
-echo "[+] Setting up file permissions..."
-if id "\$SERVICE_USER" &>/dev/null; then
-    chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$INSTALL_DIR"
-fi
+chown -R dev:dev /home/oldendome/wifibox-agent
+chmod 755 /home/oldendome/wifibox-agent/wifibox-agent
 
-chmod +x "\$INSTALL_DIR/wifibox-agent-collector"
-
-echo "[+] Enabling and starting systemd service..."
 systemctl daemon-reload
-systemctl enable wifibox-collector.service
-systemctl restart wifibox-collector.service
-exit 0
+systemctl enable wifibox-agent.service
+systemctl restart wifibox-agent.service
 EOF
-chmod 755 "$BUILD_DIR/DEBIAN/postinst"
 
-echo "[+] Writing pre-removal script..."
-cat << EOF > "$BUILD_DIR/DEBIAN/prerm"
+# 4. Create Pre-Remove Script
+cat << 'EOF' > "$PKG_DIR/DEBIAN/prerm"
 #!/bin/bash
 set -e
-echo "[+] Stopping wifibox-collector service..."
-systemctl stop wifibox-collector.service || true
-systemctl disable wifibox-collector.service || true
-exit 0
-EOF
-chmod 755 "$BUILD_DIR/DEBIAN/prerm"
-
-echo "[+] Creating default wifibox_inventory.json..."
-cat << 'EOF' > "$BUILD_DIR/$INSTALL_DIR/wifibox_inventory.json"
-[
-  {
-    "uid": "wb-a1b2c3d4",
-    "wg_ip": "10.5.1.132",
-    "site": "sokmatech",
-    "mode": "ap",
-    "notes": "box acuan"
-  }
-]
-EOF
-
-echo "[+] Copying python source for Cythonizing..."
-cp wifibox_agent_collector.py /tmp/wifibox_agent_collector.py
-
-echo "[+] Cythonizing and compiling the python script..."
-$CYTHON_BIN -3 --embed -o /tmp/wifibox_agent_collector.c /tmp/wifibox_agent_collector.py
-
-PYTHON_CFLAGS=$(python3-config --cflags)
-if python3-config --ldflags --embed >/dev/null 2>&1; then
-    PYTHON_LDFLAGS=$(python3-config --ldflags --embed)
-else
-    PYTHON_LDFLAGS=$(python3-config --ldflags)
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    systemctl stop wifibox-agent.service || true
+    systemctl disable wifibox-agent.service || true
 fi
+EOF
 
-echo "[+] Compiling C code to binary for $ARCH..."
-gcc -O3 $PYTHON_CFLAGS /tmp/wifibox_agent_collector.c $PYTHON_LDFLAGS -o "$BUILD_DIR/$INSTALL_DIR/wifibox-agent-collector"
-rm -f /tmp/wifibox_agent_collector.c /tmp/wifibox_agent_collector.py
+# 5. Create Post-Remove Script
+cat << 'EOF' > "$PKG_DIR/DEBIAN/postrm"
+#!/bin/bash
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    systemctl daemon-reload
+fi
+EOF
 
-echo "[+] Writing systemd service file..."
-cat << EOF > "$BUILD_DIR/lib/systemd/system/wifibox-collector.service"
+chmod 755 "$PKG_DIR/DEBIAN/postinst"
+chmod 755 "$PKG_DIR/DEBIAN/prerm"
+chmod 755 "$PKG_DIR/DEBIAN/postrm"
+
+# 6. Cythonize and Compile the Python script
+echo "Compiling Python script to C with Cython..."
+cp wifibox_agent.py "$BUILD_SRC/"
+cython3 --embed -o "$BUILD_SRC/wifibox_agent.c" "$BUILD_SRC/wifibox_agent.py"
+
+echo "Compiling C code to binary executable with GCC..."
+CFLAGS=$(python3-config --cflags)
+LDFLAGS=$(python3-config --embed --ldflags 2>/dev/null || python3-config --ldflags)
+
+gcc -Os $CFLAGS -o "$PKG_DIR/home/oldendome/wifibox-agent/wifibox-agent" "$BUILD_SRC/wifibox_agent.c" $LDFLAGS
+
+# 7. Create the Systemd Service File
+cat << 'EOF_SERVICE' > "$PKG_DIR/lib/systemd/system/wifibox-agent.service"
 [Unit]
-Description=Wifibox Fleet Collector Service
+Description=Wifibox Agent Prometheus Exporter
 After=network.target
 
 [Service]
-User=${SERVICE_USER}
-WorkingDirectory=/${INSTALL_DIR}
-ExecStart=/${INSTALL_DIR}/wifibox-agent-collector
+User=dev
+ExecStart=/home/oldendome/wifibox-agent/wifibox-agent
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_SERVICE
 
-echo "[+] Building Debian package..."
-dpkg-deb --build "$BUILD_DIR" "${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
+# 8. Build the Debian package
+echo "Building the .deb file..."
+dpkg-deb --build "$PKG_DIR"
 
-echo "[+] Cleaning up build directory..."
-rm -rf "$BUILD_DIR"
+# 9. Cleanup
+rm -rf "$PKG_DIR"
+rm -rf "$BUILD_SRC"
 
-echo "[+] Success! Package created: ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
+echo "Success! Package created: $PKG_DIR.deb"

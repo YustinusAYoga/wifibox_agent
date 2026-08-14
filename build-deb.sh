@@ -111,8 +111,7 @@ EOF_SERVICE
 echo "Building the .deb file..."
 dpkg-deb --build "$PKG_DIR"
 
-# 9. Move the deb out and Cleanup
-mv "$PKG_DIR.deb" ./
+# 9. Cleanup (removed the mv command)
 rm -rf "$PKG_DIR"
 rm -rf "$BUILD_SRC"
 

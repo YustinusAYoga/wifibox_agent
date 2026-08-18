@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Take architecture from arguments, default to host architecture (will be armhf in the Docker container)
+# Take architecture from arguments, default to host architecture
 ARCH=${1:-$(dpkg --print-architecture)}
 PKG_NAME="wifibox-agent"
 VERSION="1.0.0"
@@ -19,20 +19,28 @@ if [ ! -f "wifibox_agent.py" ]; then
     exit 1
 fi
 
+# Auto-install build dependencies if running directly (GitHub Actions also handles this)
+if command -v apt-get >/dev/null; then
+    echo "Auto-installing build dependencies..."
+    apt-get update
+    # Added python3 explicitly to the build environment installer
+    apt-get install -y dpkg-dev cython3 gcc python3 python3-dev
+fi
+
 # 1. Create Directory Structure
 mkdir -p "$PKG_DIR/DEBIAN"
 mkdir -p "$PKG_DIR/home/oldendome/wifibox-agent"
 mkdir -p "$PKG_DIR/lib/systemd/system"
 mkdir -p "$BUILD_SRC"
 
-# 2. Create the Control File
+# 2. Create the Control File (This tells apt to auto-install these runtime dependencies)
 cat << EOF > "$PKG_DIR/DEBIAN/control"
 Package: $PKG_NAME
 Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $ARCH
-Depends: python3, python3-pip, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq
+Depends: python3, python3-pip, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq, rsync
 Maintainer: Your Name <your.email@example.com>
 Description: Wifibox Agent Prometheus Exporter (Cythonized)
  A background binary service to monitor Raspberry Pi network, VPN, and DHCP health.

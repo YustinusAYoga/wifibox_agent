@@ -2,18 +2,30 @@ import time
 import subprocess
 import os
 import re
+import shutil
 import requests
+import json
 from prometheus_client import start_http_server, Gauge, Info, CollectorRegistry, write_to_textfile
 
+# --- Configuration ---
 PORT = 9101
 UPDATE_INTERVAL = 300
 TEXT_FILE_PATH = "/home/oldendome/wifibox-agent/meteric-data.txt"
 IS_AP_FLAG_FILE = "/home/oldendome/wifibox_is_ap.txt"
 LEASE_FILE_DHCLIENT = "/var/lib/dhcp/dhclient.leases"
+ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
 PUSHGATEWAY_URL = "" 
+
+# --- Rsync Configuration ---
+RSYNC_HOST = "yourheadoffice.com"
+RSYNC_PORT = "22"
+RSYNC_USER = "your_ssh_user"
+RSYNC_REMOTE_DIR = "/path/to/remote/folder/"  # Must end with a slash
+RSYNC_KEY_PATH = "/home/oldendome/.ssh/id_rsa" # Path to the dev user's private SSH key
 
 registry = CollectorRegistry()
 
+# Existing Metrics
 m_internet_up = Gauge('wifibox_internet_up', '1 if wlan0 or eth1 has internet', registry=registry)
 m_vpn_up = Gauge('wifibox_vpn_up', '1 if wg5 is alive with recent handshake', registry=registry)
 m_vpn_handshake_age = Gauge('wifibox_vpn_handshake_age_seconds', 'Age of VPN handshake in seconds', registry=registry)
@@ -36,12 +48,97 @@ m_check_success = Gauge('wifibox_check_success', '1 if all checks passed, 0 if a
 m_last_check = Gauge('wifibox_last_check_timestamp_seconds', 'Epoch timestamp of last successful check', registry=registry)
 m_agent_info = Info('wifibox_agent_info', 'List of running background apps', registry=registry)
 
+# Hardware Health Metrics
+m_cpu_usage = Gauge('wifibox_cpu_usage_percent', 'CPU usage percentage', registry=registry)
+m_cpu_temp = Gauge('wifibox_cpu_temp_celsius', 'CPU temperature in Celsius', registry=registry)
+m_mem_total = Gauge('wifibox_memory_total_bytes', 'Total memory in bytes', registry=registry)
+m_mem_used = Gauge('wifibox_memory_used_bytes', 'Used memory in bytes', registry=registry)
+m_mem_avail = Gauge('wifibox_memory_available_bytes', 'Available memory in bytes', registry=registry)
+m_disk_total = Gauge('wifibox_disk_total_bytes', 'Total disk space in bytes', registry=registry)
+m_disk_used = Gauge('wifibox_disk_used_bytes', 'Used disk space in bytes', registry=registry)
+m_disk_free = Gauge('wifibox_disk_free_bytes', 'Free disk space in bytes', registry=registry)
+
+# Globals for tracking state
+last_cpu_idle = 0
+last_cpu_total = 0
+last_known_wg_ip = None
+
 def run_cmd(cmd):
     try:
         result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return result.stdout.strip(), result.returncode
     except Exception as e:
         return str(e), 1
+
+def get_pi_uid():
+    uid = "unknown"
+    try:
+        with open('/sys/firmware/devicetree/base/serial-number', 'r') as f:
+            uid = f.read().replace('\x00', '').strip()
+    except Exception:
+        try:
+            with open('/etc/machine-id', 'r') as f:
+                uid = f.read().strip()[:8]
+        except Exception:
+            pass
+    return f"wb-{uid}"
+
+def get_wg_ip():
+    out, code = run_cmd("ip -4 addr show wg5")
+    if code == 0:
+        match = re.search(r'inet\s+([0-9]+(?:\.[0-9]+){3})', out)
+        if match:
+            return match.group(1)
+    return "127.0.0.1"
+
+def upload_identification_rsync(local_dir_path):
+    if not RSYNC_HOST or RSYNC_HOST == "yourheadoffice.com":
+        return
+        
+    try:
+        remote_target = f"{RSYNC_USER}@{RSYNC_HOST}:{RSYNC_REMOTE_DIR}"
+        
+        # Build the rsync command using SSH with StrictHostKeyChecking disabled
+        ssh_cmd = f"ssh -p {RSYNC_PORT} -i {RSYNC_KEY_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        
+        # By passing the local folder path (without a trailing slash), 
+        # rsync will safely copy the folder and its contents to the remote directory.
+        cmd = ["rsync", "-azq", "-e", ssh_cmd, local_dir_path, remote_target]
+        
+        # Execute with a 30-second timeout so it never blocks the main monitoring loop
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    except Exception:
+        pass # Fails gracefully if there's no internet or SSH is down
+
+def sync_identification():
+    global last_known_wg_ip
+    current_wg_ip = get_wg_ip()
+    uid = get_pi_uid()
+    
+    # The folder will be: /home/oldendome/wifibox-agent/data/<uid>
+    uid_dir = os.path.join(ID_FILE_DIR, uid)
+    
+    # The file inside the folder: /home/oldendome/wifibox-agent/data/<uid>/wifibox_identification.json
+    local_file_path = os.path.join(uid_dir, "wifibox_identification.json")
+    
+    # Only write and upload if it's the first run, or if the VPN IP has changed
+    if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
+        os.makedirs(uid_dir, exist_ok=True)
+        data = [
+            {
+                "uid": uid,
+                "wg_ip": current_wg_ip
+            }
+        ]
+        try:
+            with open(local_file_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                
+            # Sync the entire UID folder up to the server
+            upload_identification_rsync(uid_dir)
+            last_known_wg_ip = current_wg_ip
+        except Exception:
+            pass
 
 def check_internet():
     out, code1 = run_cmd("ping -c 1 -W 2 -I wlan0 8.8.8.8")
@@ -110,6 +207,56 @@ def get_running_apps():
     apps = out.replace('\n', ',') if code == 0 else "unknown"
     m_agent_info.info({'apps': apps})
 
+def get_hardware_health():
+    global last_cpu_idle, last_cpu_total
+    
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+            m_cpu_temp.set(float(f.read().strip()) / 1000.0)
+    except: pass
+
+    try:
+        with open('/proc/stat', 'r') as f:
+            line = f.readline()
+            if line.startswith('cpu '):
+                parts = [float(i) for i in line.split()[1:]]
+                idle = parts[3] + parts[4]
+                total = sum(parts)
+                
+                if last_cpu_total > 0:
+                    diff_idle = idle - last_cpu_idle
+                    diff_total = total - last_cpu_total
+                    if diff_total > 0:
+                        usage = 100.0 * (1.0 - (diff_idle / diff_total))
+                        m_cpu_usage.set(usage)
+                
+                last_cpu_idle = idle
+                last_cpu_total = total
+    except: pass
+
+    try:
+        meminfo = {}
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                parts = line.split(':')
+                if len(parts) == 2:
+                    val = parts[1].strip().split()[0]
+                    meminfo[parts[0].strip()] = int(val) * 1024
+        
+        if 'MemTotal' in meminfo: m_mem_total.set(meminfo['MemTotal'])
+        if 'MemAvailable' in meminfo: m_mem_avail.set(meminfo['MemAvailable'])
+        if 'MemFree' in meminfo:
+            used = meminfo.get('MemTotal', 0) - meminfo.get('MemFree', 0) - meminfo.get('Buffers', 0) - meminfo.get('Cached', 0)
+            m_mem_used.set(max(0, used))
+    except: pass
+
+    try:
+        disk = shutil.disk_usage("/")
+        m_disk_total.set(disk.total)
+        m_disk_used.set(disk.used)
+        m_disk_free.set(disk.free)
+    except: pass
+
 def push_pending_data():
     if not PUSHGATEWAY_URL: return
     try:
@@ -128,12 +275,15 @@ def main():
             is_online = check_internet()
             m_internet_up.set(is_online)
             
+            # If we are online, check if we need to write/upload identity info via rsync
+            if is_online:
+                sync_identification()
+            
             vpn_up, vpn_age = get_vpn_stats()
             m_vpn_up.set(vpn_up)
             m_vpn_handshake_age.set(vpn_age)
             
             m_tailscale_up.set(get_tailscale_stats())
-            
             m_ap_interface_up.set(check_ap_interface())
             m_ip_forward.set(check_ip_forward())
             m_nat_masq.set(check_nat())
@@ -154,6 +304,7 @@ def main():
             
             m_config_mismatch.set(1 if not os.path.exists(IS_AP_FLAG_FILE) else 0)
             get_running_apps()
+            get_hardware_health()
             
             m_check_success.set(1)
             m_last_check.set(time.time())

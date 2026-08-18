@@ -106,7 +106,7 @@ Description=Wifibox Agent Prometheus Exporter
 After=network.target
 
 [Service]
-User=dev
+User=oldendome
 ExecStart=/home/oldendome/wifibox-agent/wifibox-agent
 Restart=always
 RestartSec=10

@@ -1,12 +1,19 @@
 #!/bin/bash
 set -e
 
+# --- Configuration ---
 # Take architecture from arguments, default to host architecture
 ARCH=${1:-$(dpkg --print-architecture)}
 PKG_NAME="wifibox-agent"
 VERSION="1.0.0"
 PKG_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
 BUILD_SRC="build_src"
+
+# --- Tailscale Configuration ---
+# Replace this with your Tailscale OAuth Key or Auth Key
+# Example: tskey-client-cXXXXXXXXXXXX
+TAILSCALE_OAUTH_KEY="tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi"
+
 
 echo "=========================================="
 echo " Building Cythonized Debian Package"
@@ -23,7 +30,6 @@ fi
 if command -v apt-get >/dev/null; then
     echo "Auto-installing build dependencies..."
     apt-get update
-    # Added python3 explicitly to the build environment installer
     apt-get install -y dpkg-dev cython3 gcc python3 python3-dev
 fi
 
@@ -33,26 +39,28 @@ mkdir -p "$PKG_DIR/home/oldendome/wifibox-agent"
 mkdir -p "$PKG_DIR/lib/systemd/system"
 mkdir -p "$BUILD_SRC"
 
-# 2. Create the Control File (This tells apt to auto-install these runtime dependencies)
+# 2. Create the Control File (Added 'curl' for the Tailscale install script)
 cat << EOF > "$PKG_DIR/DEBIAN/control"
 Package: $PKG_NAME
 Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $ARCH
-Depends: python3, python3-pip, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq, rsync
+Depends: python3, python3-pip, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq, rsync, curl
 Maintainer: Your Name <your.email@example.com>
 Description: Wifibox Agent Prometheus Exporter (Cythonized)
- A background binary service to monitor Raspberry Pi network, VPN, and DHCP health.
+ A background binary service to monitor Raspberry Pi network, VPN, Tailscale, and DHCP health.
 EOF
 
 # 3. Create Post-Install Script
-cat << 'EOF' > "$PKG_DIR/DEBIAN/postinst"
+cat << EOF_POSTINST > "$PKG_DIR/DEBIAN/postinst"
 #!/bin/bash
 set -e
+
 echo "Installing Python dependencies (prometheus_client, requests)..."
 pip3 install prometheus_client requests --break-system-packages || pip3 install prometheus_client requests
 
+# Setup user
 if ! id "dev" &>/dev/null; then
     useradd -r -s /bin/false dev
 fi
@@ -60,10 +68,29 @@ fi
 chown -R dev:dev /home/oldendome/wifibox-agent
 chmod 755 /home/oldendome/wifibox-agent/wifibox-agent
 
+# --- Tailscale Installation & Authentication ---
+if ! command -v tailscale &> /dev/null; then
+    echo "Installing Tailscale..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+else
+    echo "Tailscale is already installed."
+fi
+
+# Authenticate Tailscale if the key was provided
+if [ "$TAILSCALE_OAUTH_KEY" != "tskey-client-YOUR_OAUTH_KEY_HERE" ] && [ -n "$TAILSCALE_OAUTH_KEY" ]; then
+    echo "Authenticating Tailscale with OAuth Key..."
+    # You can add additional flags here like --accept-routes or --advertise-tags if needed
+    tailscale up --authkey "$TAILSCALE_OAUTH_KEY" --reset || echo "Warning: Tailscale authentication failed."
+else
+    echo "Skipping Tailscale authentication (No valid OAuth key provided in build script)."
+fi
+# -----------------------------------------------
+
+echo "Starting wifibox-agent service..."
 systemctl daemon-reload
 systemctl enable wifibox-agent.service
 systemctl restart wifibox-agent.service
-EOF
+EOF_POSTINST
 
 # 4. Create Pre-Remove Script
 cat << 'EOF' > "$PKG_DIR/DEBIAN/prerm"
@@ -106,7 +133,7 @@ Description=Wifibox Agent Prometheus Exporter
 After=network.target
 
 [Service]
-User=oldendome
+User=dev
 ExecStart=/home/oldendome/wifibox-agent/wifibox-agent
 Restart=always
 RestartSec=10

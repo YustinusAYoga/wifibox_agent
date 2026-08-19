@@ -63,12 +63,21 @@ chmod 755 /home/oldendome/wifibox-agent/wifibox-agent
 
 # --- Tailscale Authentication ---
 if command -v tailscale &> /dev/null; then
-    if [ "$TAILSCALE_OAUTH_KEY" != "tskey-client-YOUR_OAUTH_KEY_HERE" ] && [ -n "$TAILSCALE_OAUTH_KEY" ]; then
+    if [ "$TAILSCALE_OAUTH_KEY" != "tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi?preauthorized=true" ] && [ -n "$TAILSCALE_OAUTH_KEY" ]; then
         echo "Authenticating Tailscale with OAuth Key..."
         tailscale up --authkey "$TAILSCALE_OAUTH_KEY" --reset || echo "Warning: Tailscale auth failed."
     fi
 else
-    echo "Notice: Tailscale not found. Please install it manually if needed."
+    echo "Starting Tailscale installation..."
+
+    # 1. Download and run the official Tailscale installation script
+    curl -fsSL https://tailscale.com/install.sh | sh
+    
+    echo "Tailscale installed successfully! Starting OAuth login..."
+    
+    # 2. Authenticate using the OAuth Client Secret and apply the required tag
+    # We append URL parameters to preauthorize the device automatically
+    sudo tailscale up --authkey="tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi?preauthorized=true" --advertise-tags="tag:raspberrypi"
 fi
 # -----------------------------------------------
 
@@ -119,7 +128,7 @@ Description=Wifibox Agent Prometheus Exporter
 After=network.target
 
 [Service]
-User=dev
+User=oldendome
 ExecStart=/home/oldendome/wifibox-agent/wifibox-agent
 Restart=always
 RestartSec=10

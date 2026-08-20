@@ -8,9 +8,6 @@ VERSION="1.0.0"
 PKG_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
 BUILD_SRC="build_src"
 
-# --- Tailscale Configuration ---
-# Replace this with your Tailscale OAuth Key or Auth Key
-TAILSCALE_OAUTH_KEY="tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi"
 
 echo "=========================================="
 echo " Building Cythonized Debian Package"
@@ -45,7 +42,7 @@ Architecture: $ARCH
 Depends: python3, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq, rsync, curl, python3-requests, python3-prometheus-client
 Maintainer: Your Name <your.email@example.com>
 Description: Wifibox Agent Prometheus Exporter (Cythonized)
- A background binary service to monitor Raspberry Pi network, VPN, Tailscale, and DHCP health.
+ A background binary service to monitor Raspberry Pi network, VPN, and DHCP health.
 EOF
 
 # 3. Create Post-Install Script
@@ -61,25 +58,6 @@ fi
 chown -R dev:dev /home/oldendome/wifibox-agent
 chmod 755 /home/oldendome/wifibox-agent/wifibox-agent
 
-# --- Tailscale Authentication ---
-if command -v tailscale &> /dev/null; then
-    if [ "$TAILSCALE_OAUTH_KEY" != "tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi?preauthorized=true" ] && [ -n "$TAILSCALE_OAUTH_KEY" ]; then
-        echo "Authenticating Tailscale with OAuth Key..."
-        tailscale up --authkey "$TAILSCALE_OAUTH_KEY" --reset || echo "Warning: Tailscale auth failed."
-    fi
-else
-    echo "Starting Tailscale installation..."
-
-    # 1. Download and run the official Tailscale installation script
-    curl -fsSL https://tailscale.com/install.sh | sh
-    
-    echo "Tailscale installed successfully! Starting OAuth login..."
-    
-    # 2. Authenticate using the OAuth Client Secret and apply the required tag
-    # We append URL parameters to preauthorize the device automatically
-    sudo tailscale up --authkey="tskey-client-kuXBDwn6cR11CNTRL-aTJxb2CqNs5vwWd4w9Zor5UY8GnFBGsZi?preauthorized=true" --advertise-tags="tag:raspberrypi"
-fi
-# -----------------------------------------------
 
 echo "Starting wifibox-agent service..."
 systemctl daemon-reload

@@ -17,7 +17,7 @@ ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
 PUSHGATEWAY_URL = "" 
 
 # --- Head Office API Configuration ---
-HEAD_OFFICE_API_URL = "http://100.105.90.66:8080/upload"
+HEAD_OFFICE_API_URL = "http://100.105.90.66:9102/upload"
 
 registry = CollectorRegistry()
 

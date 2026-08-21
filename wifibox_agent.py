@@ -97,15 +97,21 @@ def upload_identification_http(local_file_path, uid):
     if not HEAD_OFFICE_API_BASE_URL:
         return
     filename = os.path.basename(local_file_path)
-    url = f"{HEAD_OFFICE_API_BASE_URL}/upload/{uid}/{filename}"
+    url = f"{HEAD_OFFICE_API_BASE_URL}/upload"
+    
+    # Pass variables as query parameters (?uid=...&filename=...)
+    query_params = {
+        "uid": uid,
+        "filename": filename
+    }
     
     try:
-        logger.info(f"Attempting to upload {filename} to {url}")
+        logger.info(f"Attempting to upload {filename} to {url} with params {query_params}")
         with open(local_file_path, 'rb') as f:
             headers = {"Content-Type": "application/json"}
-            response = requests.post(url, data=f, headers=headers, timeout=10)
+            # Notice the params=query_params argument below
+            response = requests.post(url, params=query_params, data=f, headers=headers, timeout=10)
             
-            # Check if the server responded with a 2xx success code
             if response.ok:
                 logger.info(f"Successfully uploaded {filename}. Server responded: {response.status_code}")
             else:

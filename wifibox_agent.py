@@ -5,7 +5,13 @@ import re
 import shutil
 import requests
 import json
+import logging
 from prometheus_client import start_http_server, Gauge, Info, CollectorRegistry, write_to_textfile
+
+# --- Logging Setup ---
+# This ensures logs go to systemd's journalctl automatically
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 PORT = 9101
@@ -17,8 +23,7 @@ ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
 PUSHGATEWAY_URL = "" 
 
 # --- Head Office API Configuration ---
-# Changed to just the base URL, since the path is constructed dynamically
-HEAD_OFFICE_API_BASE_URL = "http://100.105.90.66:9102"
+HEAD_OFFICE_API_BASE_URL = "http://100.105.90.66:9101"
 
 registry = CollectorRegistry()
 
@@ -91,17 +96,24 @@ def get_wg_ip():
 def upload_identification_http(local_file_path, uid):
     if not HEAD_OFFICE_API_BASE_URL:
         return
+    filename = os.path.basename(local_file_path)
+    url = f"{HEAD_OFFICE_API_BASE_URL}/upload/{uid}/{filename}"
+    
     try:
-        filename = os.path.basename(local_file_path)
-        # Construct the URL with path parameters: /upload/{uid}/{filename}
-        url = f"{HEAD_OFFICE_API_BASE_URL}/upload/{uid}/{filename}"
-        
+        logger.info(f"Attempting to upload {filename} to {url}")
         with open(local_file_path, 'rb') as f:
-            # Send file as raw binary body (since the receiver uses request: Request)
             headers = {"Content-Type": "application/json"}
-            requests.post(url, data=f, headers=headers, timeout=10)
-    except Exception:
-        pass # Fails gracefully if the Head Office server is offline
+            response = requests.post(url, data=f, headers=headers, timeout=10)
+            
+            # Check if the server responded with a 2xx success code
+            if response.ok:
+                logger.info(f"Successfully uploaded {filename}. Server responded: {response.status_code}")
+            else:
+                logger.error(f"Upload failed for {filename}. HTTP {response.status_code}: {response.text}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error while uploading {filename}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error while uploading {filename}: {e}")
 
 def sync_identification():
     global last_known_wg_ip
@@ -114,6 +126,7 @@ def sync_identification():
     
     # Only write and upload if it's the first run, or if the VPN IP has changed
     if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
+        logger.info(f"Identity change or missing file detected. Generating JSON for UID {uid}")
         os.makedirs(uid_dir, exist_ok=True)
         data = [
             {
@@ -128,8 +141,8 @@ def sync_identification():
             # Send via HTTP POST and pass the UID
             upload_identification_http(local_file_path, uid)
             last_known_wg_ip = current_wg_ip
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to generate or save identity JSON: {e}")
 
 def check_internet():
     out, code1 = run_cmd("ping -c 1 -W 2 -I wlan0 8.8.8.8")
@@ -261,6 +274,8 @@ def main():
     os.makedirs(os.path.dirname(TEXT_FILE_PATH), exist_ok=True)
     was_offline = False
 
+    logger.info("Wifibox Agent started.")
+
     while True:
         try:
             is_online = check_internet()
@@ -303,8 +318,9 @@ def main():
             write_to_textfile(TEXT_FILE_PATH, registry)
             if is_online and was_offline: push_pending_data()
             was_offline = not is_online
-        except Exception:
+        except Exception as e:
             m_check_success.set(0)
+            logger.error(f"Agent loop encountered an error: {e}")
         time.sleep(UPDATE_INTERVAL)
 
 if __name__ == "__main__":

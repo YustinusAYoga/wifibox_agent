@@ -17,7 +17,8 @@ ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
 PUSHGATEWAY_URL = "" 
 
 # --- Head Office API Configuration ---
-HEAD_OFFICE_API_URL = "http://100.105.90.66:9102/upload"
+# Changed to just the base URL, since the path is constructed dynamically
+HEAD_OFFICE_API_BASE_URL = "http://100.105.90.66:9102"
 
 registry = CollectorRegistry()
 
@@ -87,14 +88,18 @@ def get_wg_ip():
             return match.group(1)
     return "127.0.0.1"
 
-def upload_identification_http(local_file_path):
-    if not HEAD_OFFICE_API_URL:
+def upload_identification_http(local_file_path, uid):
+    if not HEAD_OFFICE_API_BASE_URL:
         return
     try:
-        # We send the file using the 'requests' library with a 10-second timeout
+        filename = os.path.basename(local_file_path)
+        # Construct the URL with path parameters: /upload/{uid}/{filename}
+        url = f"{HEAD_OFFICE_API_BASE_URL}/upload/{uid}/{filename}"
+        
         with open(local_file_path, 'rb') as f:
-            files = {'file': (os.path.basename(local_file_path), f, 'application/json')}
-            requests.post(HEAD_OFFICE_API_URL, files=files, timeout=10)
+            # Send file as raw binary body (since the receiver uses request: Request)
+            headers = {"Content-Type": "application/json"}
+            requests.post(url, data=f, headers=headers, timeout=10)
     except Exception:
         pass # Fails gracefully if the Head Office server is offline
 
@@ -105,7 +110,7 @@ def sync_identification():
     
     # Create the local folder structure
     uid_dir = os.path.join(ID_FILE_DIR, uid)
-    local_file_path = os.path.join(uid_dir, f"wifibox_identification.json")
+    local_file_path = os.path.join(uid_dir, "wifibox_identification.json")
     
     # Only write and upload if it's the first run, or if the VPN IP has changed
     if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
@@ -120,8 +125,8 @@ def sync_identification():
             with open(local_file_path, 'w') as f:
                 json.dump(data, f, indent=2)
                 
-            # Send via HTTP POST
-            upload_identification_http(local_file_path)
+            # Send via HTTP POST and pass the UID
+            upload_identification_http(local_file_path, uid)
             last_known_wg_ip = current_wg_ip
         except Exception:
             pass

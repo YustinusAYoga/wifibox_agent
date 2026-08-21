@@ -16,12 +16,8 @@ LEASE_FILE_DHCLIENT = "/var/lib/dhcp/dhclient.leases"
 ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
 PUSHGATEWAY_URL = "" 
 
-# --- Rsync Configuration ---
-RSYNC_HOST = "yourheadoffice.com"
-RSYNC_PORT = "22"
-RSYNC_USER = "your_ssh_user"
-RSYNC_REMOTE_DIR = "/path/to/remote/folder/"  # Must end with a slash
-RSYNC_KEY_PATH = "/home/oldendome/.ssh/id_rsa" # Path to the dev user's private SSH key
+# --- Head Office API Configuration ---
+HEAD_OFFICE_API_URL = "http://100.105.90.66:8080/upload"
 
 registry = CollectorRegistry()
 
@@ -91,35 +87,25 @@ def get_wg_ip():
             return match.group(1)
     return "127.0.0.1"
 
-def upload_identification_rsync(local_dir_path):
-    if not RSYNC_HOST or RSYNC_HOST == "yourheadoffice.com":
+def upload_identification_http(local_file_path):
+    if not HEAD_OFFICE_API_URL:
         return
-        
     try:
-        remote_target = f"{RSYNC_USER}@{RSYNC_HOST}:{RSYNC_REMOTE_DIR}"
-        
-        # Build the rsync command using SSH with StrictHostKeyChecking disabled
-        ssh_cmd = f"ssh -p {RSYNC_PORT} -i {RSYNC_KEY_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        
-        # By passing the local folder path (without a trailing slash), 
-        # rsync will safely copy the folder and its contents to the remote directory.
-        cmd = ["rsync", "-azq", "-e", ssh_cmd, local_dir_path, remote_target]
-        
-        # Execute with a 30-second timeout so it never blocks the main monitoring loop
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        # We send the file using the 'requests' library with a 10-second timeout
+        with open(local_file_path, 'rb') as f:
+            files = {'file': (os.path.basename(local_file_path), f, 'application/json')}
+            requests.post(HEAD_OFFICE_API_URL, files=files, timeout=10)
     except Exception:
-        pass # Fails gracefully if there's no internet or SSH is down
+        pass # Fails gracefully if the Head Office server is offline
 
 def sync_identification():
     global last_known_wg_ip
     current_wg_ip = get_wg_ip()
     uid = get_pi_uid()
     
-    # The folder will be: /home/oldendome/wifibox-agent/data/<uid>
+    # Create the local folder structure
     uid_dir = os.path.join(ID_FILE_DIR, uid)
-    
-    # The file inside the folder: /home/oldendome/wifibox-agent/data/<uid>/wifibox_identification.json
-    local_file_path = os.path.join(uid_dir, "wifibox_identification.json")
+    local_file_path = os.path.join(uid_dir, f"wifibox_identification.json")
     
     # Only write and upload if it's the first run, or if the VPN IP has changed
     if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
@@ -134,8 +120,8 @@ def sync_identification():
             with open(local_file_path, 'w') as f:
                 json.dump(data, f, indent=2)
                 
-            # Sync the entire UID folder up to the server
-            upload_identification_rsync(uid_dir)
+            # Send via HTTP POST
+            upload_identification_http(local_file_path)
             last_known_wg_ip = current_wg_ip
         except Exception:
             pass
@@ -275,7 +261,7 @@ def main():
             is_online = check_internet()
             m_internet_up.set(is_online)
             
-            # If we are online, check if we need to write/upload identity info via rsync
+            # If we are online, check if we need to write/upload identity info via HTTP API
             if is_online:
                 sync_identification()
             

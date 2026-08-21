@@ -8,6 +8,9 @@ VERSION="1.0.0"
 PKG_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
 BUILD_SRC="build_src"
 
+# --- Tailscale Configuration ---
+# Replace this with your Tailscale OAuth Key or Auth Key
+TAILSCALE_OAUTH_KEY="tskey-client-YOUR_OAUTH_KEY_HERE"
 
 echo "=========================================="
 echo " Building Cythonized Debian Package"
@@ -32,7 +35,7 @@ mkdir -p "$PKG_DIR/home/oldendome/wifibox-agent"
 mkdir -p "$PKG_DIR/lib/systemd/system"
 mkdir -p "$BUILD_SRC"
 
-# 2. Create the Control File (Swapped pip3 for native Debian python packages)
+# 2. Create the Control File
 cat << EOF > "$PKG_DIR/DEBIAN/control"
 Package: $PKG_NAME
 Version: $VERSION
@@ -42,7 +45,7 @@ Architecture: $ARCH
 Depends: python3, wireguard-tools, net-tools, iw, iptables, isc-dhcp-server, dnsmasq, rsync, curl, python3-requests, python3-prometheus-client
 Maintainer: Your Name <your.email@example.com>
 Description: Wifibox Agent Prometheus Exporter (Cythonized)
- A background binary service to monitor Raspberry Pi network, VPN, and DHCP health.
+ A background binary service to monitor Raspberry Pi network, VPN, Tailscale, and DHCP health.
 EOF
 
 # 3. Create Post-Install Script
@@ -50,19 +53,27 @@ cat << EOF_POSTINST > "$PKG_DIR/DEBIAN/postinst"
 #!/bin/bash
 set -e
 
-# Setup user
-if ! id "dev" &>/dev/null; then
-    useradd -r -s /bin/false dev
-fi
-
-chown -R dev:dev /home/oldendome/wifibox-agent
+# Ensure the oldendome user owns their own agent files
+chown -R oldendome:oldendome /home/oldendome/wifibox-agent
 chmod 755 /home/oldendome/wifibox-agent/wifibox-agent
 
+# --- Tailscale Authentication ONLY ---
+if command -v tailscale &> /dev/null; then
+    if [ "\$TAILSCALE_OAUTH_KEY" != "tskey-client-YOUR_OAUTH_KEY_HERE" ] && [ -n "\$TAILSCALE_OAUTH_KEY" ]; then
+        echo "Authenticating Tailscale..."
+        tailscale up --authkey "\$TAILSCALE_OAUTH_KEY" --reset || true
+    fi
+else
+    echo "Notice: Tailscale not found. Skipping auto-auth."
+fi
+# -----------------------------------------------
 
 echo "Starting wifibox-agent service..."
 systemctl daemon-reload
-systemctl enable wifibox-agent.service
-systemctl restart wifibox-agent.service
+systemctl enable wifibox-agent.service || true
+systemctl restart wifibox-agent.service || true
+
+exit 0
 EOF_POSTINST
 
 # 4. Create Pre-Remove Script

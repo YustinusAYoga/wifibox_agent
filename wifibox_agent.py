@@ -9,7 +9,6 @@ import logging
 from prometheus_client import start_http_server, Gauge, Info, CollectorRegistry, write_to_textfile
 
 # --- Logging Setup ---
-# This ensures logs go to systemd's journalctl automatically
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ UPDATE_INTERVAL = 300
 TEXT_FILE_PATH = "/home/oldendome/wifibox-agent/meteric-data.txt"
 IS_AP_FLAG_FILE = "/home/oldendome/wifibox_is_ap.txt"
 LEASE_FILE_DHCLIENT = "/var/lib/dhcp/dhclient.leases"
-ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  # Base data directory
+ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  
 PUSHGATEWAY_URL = "" 
 
 # --- Head Office API Configuration ---
@@ -99,7 +98,7 @@ def upload_identification_http(local_file_path, uid):
     filename = os.path.basename(local_file_path)
     url = f"{HEAD_OFFICE_API_BASE_URL}/upload"
     
-    # Pass variables as query parameters (?uid=...&filename=...)
+    # Send parameters via query string to match request.query_params on the server
     query_params = {
         "uid": uid,
         "filename": filename
@@ -109,7 +108,6 @@ def upload_identification_http(local_file_path, uid):
         logger.info(f"Attempting to upload {filename} to {url} with params {query_params}")
         with open(local_file_path, 'rb') as f:
             headers = {"Content-Type": "application/json"}
-            # Notice the params=query_params argument below
             response = requests.post(url, params=query_params, data=f, headers=headers, timeout=10)
             
             if response.ok:
@@ -126,11 +124,9 @@ def sync_identification():
     current_wg_ip = get_wg_ip()
     uid = get_pi_uid()
     
-    # Create the local folder structure
     uid_dir = os.path.join(ID_FILE_DIR, uid)
     local_file_path = os.path.join(uid_dir, "wifibox_identification.json")
     
-    # Only write and upload if it's the first run, or if the VPN IP has changed
     if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
         logger.info(f"Identity change or missing file detected. Generating JSON for UID {uid}")
         os.makedirs(uid_dir, exist_ok=True)
@@ -144,7 +140,6 @@ def sync_identification():
             with open(local_file_path, 'w') as f:
                 json.dump(data, f, indent=2)
                 
-            # Send via HTTP POST and pass the UID
             upload_identification_http(local_file_path, uid)
             last_known_wg_ip = current_wg_ip
         except Exception as e:
@@ -181,7 +176,7 @@ def check_ap_interface():
 
 def check_ip_forward():
     out, code = run_cmd("cat /proc/sys/net/ipv4/ip_forward")
-    return 1 if out == "1" else 0
+    return 1 if code == "1" else 0
 
 def check_nat():
     out, code = run_cmd("iptables -t nat -S | grep MASQUERADE")
@@ -287,7 +282,6 @@ def main():
             is_online = check_internet()
             m_internet_up.set(is_online)
             
-            # If we are online, check if we need to write/upload identity info via HTTP API
             if is_online:
                 sync_identification()
             

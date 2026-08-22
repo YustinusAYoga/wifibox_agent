@@ -21,7 +21,7 @@ LEASE_FILE_DHCLIENT = "/var/lib/dhcp/dhclient.leases"
 ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  
 PUSHGATEWAY_URL = "" 
 
-# --- Head Office API Configuration ---
+# --- Head Office API Configuration (Port updated to 9102) ---
 HEAD_OFFICE_API_BASE_URL = "http://100.105.90.66:9102"
 
 registry = CollectorRegistry()
@@ -92,16 +92,16 @@ def get_wg_ip():
             return match.group(1)
     return "127.0.0.1"
 
-def upload_identification_http(local_file_path, uid):
+def upload_identification_http(local_file_path, uid, wg_ip):
     if not HEAD_OFFICE_API_BASE_URL:
         return
     filename = os.path.basename(local_file_path)
     url = f"{HEAD_OFFICE_API_BASE_URL}/upload"
     
-    # Send parameters via query string to match request.query_params on the server
+    # Maps directly to: /upload?uid=...&ip=...
     query_params = {
         "uid": uid,
-        "filename": filename
+        "ip": wg_ip
     }
     
     try:
@@ -140,7 +140,7 @@ def sync_identification():
             with open(local_file_path, 'w') as f:
                 json.dump(data, f, indent=2)
                 
-            upload_identification_http(local_file_path, uid)
+            upload_identification_http(local_file_path, uid, current_wg_ip)
             last_known_wg_ip = current_wg_ip
         except Exception as e:
             logger.error(f"Failed to generate or save identity JSON: {e}")
@@ -176,7 +176,7 @@ def check_ap_interface():
 
 def check_ip_forward():
     out, code = run_cmd("cat /proc/sys/net/ipv4/ip_forward")
-    return 1 if code == "1" else 0
+    return 1 if out == "1" else 0
 
 def check_nat():
     out, code = run_cmd("iptables -t nat -S | grep MASQUERADE")

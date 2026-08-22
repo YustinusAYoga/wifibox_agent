@@ -21,7 +21,7 @@ LEASE_FILE_DHCLIENT = "/var/lib/dhcp/dhclient.leases"
 ID_FILE_DIR = "/home/oldendome/wifibox-agent/data"  
 PUSHGATEWAY_URL = "" 
 
-# --- Head Office API Configuration (Port updated to 9102) ---
+# --- Head Office API Configuration ---
 HEAD_OFFICE_API_BASE_URL = "http://100.105.90.66:9102"
 
 registry = CollectorRegistry()
@@ -92,32 +92,30 @@ def get_wg_ip():
             return match.group(1)
     return "127.0.0.1"
 
-def upload_identification_http(local_file_path, uid, wg_ip):
+def upload_identification_http(uid, wg_ip):
     if not HEAD_OFFICE_API_BASE_URL:
         return
-    filename = os.path.basename(local_file_path)
     url = f"{HEAD_OFFICE_API_BASE_URL}/upload"
     
-    # Maps directly to: /upload?uid=...&ip=...
+    # Matches the server's expected query parameters: ?uid=...&ip=...
     query_params = {
         "uid": uid,
         "ip": wg_ip
     }
     
     try:
-        logger.info(f"Attempting to upload {filename} to {url} with params {query_params}")
-        with open(local_file_path, 'rb') as f:
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(url, params=query_params, data=f, headers=headers, timeout=10)
-            
-            if response.ok:
-                logger.info(f"Successfully uploaded {filename}. Server responded: {response.status_code}")
-            else:
-                logger.error(f"Upload failed for {filename}. HTTP {response.status_code}: {response.text}")
+        logger.info(f"Sending identity registration to {url} with params {query_params}")
+        # The server handles file creation on its end via query params
+        response = requests.post(url, params=query_params, timeout=10)
+        
+        if response.ok:
+            logger.info(f"Successfully registered identity for {uid}. Server responded: {response.status_code}")
+        else:
+            logger.error(f"Registration failed for {uid}. HTTP {response.status_code}: {response.text}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Network error while uploading {filename}: {e}")
+        logger.error(f"Network error while registering identity for {uid}: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error while uploading {filename}: {e}")
+        logger.error(f"Unexpected error while registering identity for {uid}: {e}")
 
 def sync_identification():
     global last_known_wg_ip
@@ -128,8 +126,10 @@ def sync_identification():
     local_file_path = os.path.join(uid_dir, "wifibox_identification.json")
     
     if current_wg_ip != last_known_wg_ip or not os.path.exists(local_file_path):
-        logger.info(f"Identity change or missing file detected. Generating JSON for UID {uid}")
+        logger.info(f"Identity change or missing file detected. Syncing UID {uid} with IP {current_wg_ip}")
         os.makedirs(uid_dir, exist_ok=True)
+        
+        # Keep a local backup copy on the Pi just in case
         data = [
             {
                 "uid": uid,
@@ -140,10 +140,11 @@ def sync_identification():
             with open(local_file_path, 'w') as f:
                 json.dump(data, f, indent=2)
                 
-            upload_identification_http(local_file_path, uid, current_wg_ip)
+            # Trigger the HTTP request to the Head Office server
+            upload_identification_http(uid, current_wg_ip)
             last_known_wg_ip = current_wg_ip
         except Exception as e:
-            logger.error(f"Failed to generate or save identity JSON: {e}")
+            logger.error(f"Failed to save local identity JSON: {e}")
 
 def check_internet():
     out, code1 = run_cmd("ping -c 1 -W 2 -I wlan0 8.8.8.8")
